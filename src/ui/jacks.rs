@@ -1,4 +1,4 @@
-﻿//! Patch-bay jack rendering and routing logic.
+//! Patch-bay jack rendering and routing logic.
 //!
 //! Jacks are circular connectors: outputs get a unique colour, inputs start
 //! grey and fade toward the colour of whatever output they're patched to.
@@ -116,7 +116,7 @@ pub fn output_color(canvas: &layout::CanvasLayout, jack_id: &str) -> Color32 {
 /// Map a jack id to the route code byte written into `Params.jack_routes`.
 pub fn output_route_code(jack_id: &str) -> u8 {
     match jack_id {
-        "jack_lfosaw" => 1,
+        "jack_lfotri" => 1,
         "jack_lfosqr" => 2,
         "jack_mix" => 3,
         "jack_filtcont" => 4,
@@ -130,7 +130,7 @@ pub fn output_route_code(jack_id: &str) -> u8 {
 /// Routing validity matrix: which outputs may connect to which inputs.
 pub fn compatible_output(input_id: &str, output_id: &str) -> bool {
     match input_id {
-        "jack_mods" => matches!(output_id, "jack_lfosaw" | "jack_lfosqr"),
+        "jack_mods" => matches!(output_id, "jack_lfotri" | "jack_lfosqr"),
         "jack_osc1v" | "jack_lfocv" | "jack_cutcv" | "jack_loudcv" => {
             matches!(output_id, "jack_filtcont" | "jack_loudcont")
         }

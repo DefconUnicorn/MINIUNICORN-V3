@@ -1,4 +1,4 @@
-//! MIDI input via midir: note on/off, pitch bend, mod wheel -> cutoff.
+//! MIDI input via midir: note on/off, pitch bend, mod wheel, aftertouch.
 //!
 //! Keeps the connection alive by returning it; caller must hold it.
 
@@ -142,6 +142,18 @@ fn handle_midi(shared: &mut crate::params::Shared, msg: &[u8]) {
                         runtime.cc_len = (len + 1) as u8;
                     }
                 }
+            }
+        }
+        0xD0 => {
+            // Channel aftertouch (channel pressure): adds to MOD DEPTH.
+            if msg.len() >= 2 {
+                shared.runtime.aftertouch = (msg[1] as f32 / 127.0).clamp(0.0, 1.0);
+            }
+        }
+        0xA0 => {
+            // Polyphonic key pressure: track the latest pressure value.
+            if msg.len() >= 3 {
+                shared.runtime.aftertouch = (msg[2] as f32 / 127.0).clamp(0.0, 1.0);
             }
         }
         0xE0 => {

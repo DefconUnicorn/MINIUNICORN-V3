@@ -316,6 +316,8 @@ pub struct Runtime {
     pub bend_semi: f32,
     /// Mod wheel 0..1 (manual: also controls MOD DEPTH)
     pub mod_wheel: f32,
+    /// Channel/polyphonic aftertouch 0..1 (adds to MOD DEPTH)
+    pub aftertouch: f32,
     /// Monophonic gate
     pub gate: bool,
     /// Current sequencer step 0..15 (written by audio thread for UI highlight)
@@ -379,6 +381,7 @@ impl Runtime {
         if n == 0 {
             self.gate = false;
             self.note = None;
+            self.aftertouch = 0.0;
         } else {
             self.note = Some(self.held[n - 1]);
             self.velocity = self.held_vel[n - 1];
@@ -390,6 +393,7 @@ impl Runtime {
         self.held_len = 0;
         self.gate = false;
         self.note = None;
+        self.aftertouch = 0.0;
     }
 }
 

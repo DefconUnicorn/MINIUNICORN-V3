@@ -17,7 +17,7 @@ not as a claim of component-level hardware emulation.
 - Loudness contour with independent attack, decay, and sustain controls.
 - Glide, modulation source/mix/depth, LFO rate, and square/triangle controls.
 - On-screen keyboard, computer-keyboard playing, and 16-step sequencer.
-- MIDI input with note, modulation-wheel, and pitch-bend support.
+- MIDI input with note, modulation-wheel, pitch-bend, and aftertouch support.
 - CPAL audio-device selection and MIDI-device switching without restarting the application.
 - Patch-bay jacks for modulation, oscillator control, filter, loudness, audio, phones, main output, and MIDI input.
 - Context-sensitive patch routing menus with audio, CV, gate, and modulation compatibility filtering.
@@ -42,7 +42,7 @@ that code wherever the signal is needed.
 
 | Output | Signal carried | How it is generated |
 | --- | --- | --- |
-| **LFO SAW** | LFO ramp, ±1 | LFO phase accumulator (triangle/saw wave) |
+| **LFO TRIANGLE** | LFO triangle, ±1 | LFO phase accumulator (triangle wave) |
 | **LFO SQR** | LFO square, ±1 | Sign of the LFO phase |
 | **MIX** | Pre-filter mixer bus | OSC1 + OSC2 + OSC3 + noise + external/feedback |
 | **FILT CONT** | Filter contour envelope, bipolar ±1 | Filter attack/decay/sustain envelope |
@@ -54,14 +54,14 @@ that code wherever the signal is needed.
 
 | Input | Accepts | Effect |
 | --- | --- | --- |
-| **MOD SOURCE** | LFO SAW, LFO SQR | Feeds the modulation bus |
+| **MOD SOURCE** | LFO TRIANGLE, LFO SQR | Feeds the modulation bus |
 | **OSC1 V/OCT** | FILT CONT, LOUD CONT | Shifts the oscillator bank by up to ±1 octave |
 | **LFO CV** | FILT CONT, LOUD CONT | Modulates LFO rate |
 | **CUT CV** | FILT CONT, LOUD CONT | Modulates filter cutoff (±2 octaves) |
 | **LOUD CV** | FILT CONT, LOUD CONT | Modulates output level |
 | **EXT** | MIX, PHONES, MAIN | Feeds the external/feedback mixer input |
-| **FC GATE** | LFO SQR | Gates the filter contour |
-| **LC GATE** | LFO SQR | Gates the loudness contour |
+| **FC GATE** | LFO SQR | External trigger voltage for the filter contour |
+| **LC GATE** | LFO SQR | External trigger voltage for the loudness contour |
 
 The **PHONES** output can additionally be patched to a number of inputs through
 its own routing path, independent of the general patch-bay logic.

@@ -1,4 +1,4 @@
-﻿//! v2 free-canvas layout: grid-snapped drag & drop positions.
+//! v2 free-canvas layout: grid-snapped drag & drop positions.
 //!
 //! Each panel section lives in an `egui::Area` at a stored position.
 //! Edit mode shows drag handles; positions snap live to `grid` px and
@@ -78,7 +78,7 @@ pub struct CanvasLayout {
     pub grid: f32,
     /// Section id -> [x, y] (screen space, top-left of the area).
     pub pos: HashMap<String, [f32; 2]>,
-    /// Item ids rotated 90Â° (rockers/selectors with both orientations).
+    /// Item ids rotated 90° (rockers/selectors with both orientations).
     #[serde(default)]
     pub rot90: HashSet<String>,
     /// Item ids hidden in play mode (ghosts in edit mode).
@@ -159,7 +159,7 @@ pub fn default_positions() -> HashMap<String, [f32; 2]> {
         ("jack_mods", "MOD SOURCE", true),
         ("jack_osc1v", "OSC1V/OCT", true),
         ("jack_lfocv", "LFO CV", true),
-        ("jack_lfosaw", "LFO SAW", false),
+        ("jack_lfotri", "LFO TRIANGLE", false),
         ("jack_lfosqr", "LFO SQR", false),
         ("jack_ext", "EXT", true),
         ("jack_mix", "MIX", false),
@@ -196,7 +196,7 @@ pub fn default_jacks() -> HashMap<String, JackSpec> {
         ("jack_mods", "MOD SOURCE", true),
         ("jack_osc1v", "OSC1V/OCT", true),
         ("jack_lfocv", "LFO CV", true),
-        ("jack_lfosaw", "LFO SAW", false),
+        ("jack_lfotri", "LFO TRIANGLE", false),
         ("jack_lfosqr", "LFO SQR", false),
         ("jack_ext", "EXT", true),
         ("jack_mix", "MIX", false),

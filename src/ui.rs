@@ -2067,13 +2067,19 @@ const CHEAT: &[(&str, &[(&str, &str)])] = &[
     (
         "PATCH BAY — INPUTS",
         &[
-            ("MOD SOURCE", "Modulation-bus input. Patch LFO SAW/SQR here."),
+            ("MOD SOURCE", "Modulation-bus input. A patched source replaces the internal noise generator. Patch LFO TRIANGLE/SQR here."),
             ("OSC1V/OCT", "Pitch CV input for OSC 1."),
             ("LFO CV", "CV input for the LFO rate."),
             ("EXT", "External audio input (accepts MIX, PHONES or MAIN)."),
             ("CUT CV", "CV input for the filter cutoff."),
-            ("FC GATE", "Gate for the filter contour (accepts LFO SQR)."),
-            ("LC GATE", "Gate for the loudness contour (accepts LFO SQR)."),
+        (
+            "FC GATE",
+            "External trigger voltage for the filter contour (accepts LFO SQR).",
+        ),
+        (
+            "LC GATE",
+            "External trigger voltage for the loudness contour (accepts LFO SQR).",
+        ),
             ("LOUD CV", "CV input for loudness."),
             ("MIDI IN", "5-pin DIN MIDI note + CC input."),
         ],
@@ -2081,7 +2087,7 @@ const CHEAT: &[(&str, &[(&str, &str)])] = &[
     (
         "PATCH BAY — OUTPUTS",
         &[
-            ("LFO SAW", "LFO sawtooth output."),
+            ("LFO TRIANGLE", "LFO triangle output."),
             ("LFO SQR", "LFO square output (also usable as a gate)."),
             ("MIX", "Raw oscillator/noise mixer output."),
             ("FILT CONT", "Filter envelope output."),

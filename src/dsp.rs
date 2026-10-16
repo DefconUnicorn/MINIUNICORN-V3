@@ -13,6 +13,11 @@ use crate::params::{
 };
 use std::f32::consts::PI;
 
+/// Fixed reference pitch for OSC 3 when OSC 3 CONTROL is OFF (keyboard
+/// tracking off). Chosen so its LO range (-3 octaves) still gives the ~6 Hz
+/// sub-audio drone; the RANGE + FREQUENCY knobs tune it from here.
+const OSC3_FREE_REF_HZ: f32 = 48.0;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -262,6 +267,8 @@ pub struct Voice {
     drift_phase: [f32; 3],
     glide_freq: f32,
     last_gate: bool,
+    last_filt_gate: bool,
+    last_amp_gate: bool,
     filter: LadderFilter,
     amp_env: AdsEnv,
     filt_env: AdsEnv,
@@ -285,6 +292,8 @@ impl Voice {
             drift_phase: [0.0, 0.37, 0.71],
             glide_freq: 55.0,
             last_gate: false,
+            last_filt_gate: false,
+            last_amp_gate: false,
             filter: LadderFilter::new(sample_rate * 2.0),
             amp_env: AdsEnv::new(sample_rate),
             filt_env: AdsEnv::new(sample_rate),
@@ -357,20 +366,47 @@ impl Voice {
             self.last_seq_step = 0;
         }
         let eff_note = seq_note.or(r.note);
-        let phone_gate = (phones_to(5) || phones_to(6))
-            && phone_bus.abs() > 0.05;
-        let eff_gate = (if p.seq_on { seq_gate } else { r.gate }) || phone_gate;
-        if eff_gate && !self.last_gate {
-            self.amp_env.gate_on();
-            self.filt_env.gate_on();
+        // LFO waveform at the start of this sample (the audio-rate `lfo` is
+        // recomputed from the phase advanced below). Manual: the LFO output is
+        // a triangle wave.
+        let lfo_tri = if self.lfo_phase < 0.5 {
+            4.0 * self.lfo_phase - 1.0
+        } else {
+            3.0 - 4.0 * self.lfo_phase
+        };
+        let lfo_sqr = if self.lfo_phase < 0.5 { 1.0 } else { -1.0 };
+        let kb_gate = if p.seq_on { seq_gate } else { r.gate };
+        // FC GATE / LC GATE apply an external trigger voltage to the filter /
+        // loudness contour (manual). The only two-state patch source is the
+        // square LFO, so a patched gate follows the square's high state.
+        let lfo_high = lfo_sqr > 0.0;
+        let fc_gate = p.jack_routes[5] != 0 && lfo_high;
+        let lc_gate = p.jack_routes[6] != 0 && lfo_high;
+        let gate_patched = p.jack_routes[5] != 0 || p.jack_routes[6] != 0;
+        let filt_gate = kb_gate || fc_gate;
+        let amp_gate = kb_gate || lc_gate;
+        if kb_gate && !self.last_gate {
             // Reset oscillator phases on note-on to avoid clicks on pitch changes.
             self.phase = [0.0, 0.33, 0.66];
-        } else if !eff_gate && self.last_gate {
-            self.amp_env.gate_off();
-            self.filt_env.gate_off();
         }
-        let note_on = eff_gate && !self.last_gate;
-        self.last_gate = eff_gate;
+        if filt_gate != self.last_filt_gate {
+            if filt_gate {
+                self.filt_env.gate_on();
+            } else {
+                self.filt_env.gate_off();
+            }
+            self.last_filt_gate = filt_gate;
+        }
+        if amp_gate != self.last_amp_gate {
+            if amp_gate {
+                self.amp_env.gate_on();
+            } else {
+                self.amp_env.gate_off();
+            }
+            self.last_amp_gate = amp_gate;
+        }
+        let note_on = kb_gate && !self.last_gate;
+        self.last_gate = kb_gate;
 
         // --- note + tune (A-440 no longer hijacks the voice; it is a
         // separate solid reference drone mixed at the output below) ---
@@ -423,7 +459,28 @@ impl Voice {
         // (8) MOD MIX blends A <> B. (10) MOD DEPTH (+ mod wheel) = amount.
         // (7) OSC MOD routes bus to osc pitch; (32) FILTER MOD routes to filter.
         let sr_pre = self.sample_rate;
-        let lfo_hz = params::knob_0_10_to_lfo_hz(p.lfo_rate_0_10).clamp(0.02, 300.0);
+        // Signal lookup for every routable jack. Defined before the LFO so
+        // the LFO CV input can modulate the rate, and before OSC3 so OSC1V
+        // can shift the whole oscillator bank.
+        let route_signal = |code: u8, mix_signal: f32| match code {
+            1 => lfo_tri,
+            2 => lfo_sqr,
+            3 => mix_signal,
+            4 => f_env * 2.0 - 1.0,
+            5 => a_env,
+            6 => phone_bus,
+            7 => self.prev_out,
+            _ => 0.0,
+        };
+        // LFO rate: knob plus the LFO CV input (manual: an external control
+        // voltage controls the LFO frequency). 1 unit of CV = one octave.
+        let mut lfo_hz = params::knob_0_10_to_lfo_hz(p.lfo_rate_0_10);
+        if p.jack_routes[2] != 0 {
+            lfo_hz *= 2.0f32.powf(route_signal(p.jack_routes[2], 0.0));
+        } else if phones_to(2) {
+            lfo_hz *= 2.0f32.powf(phone_bus);
+        }
+        let lfo_hz = lfo_hz.clamp(0.02, 300.0);
         self.lfo_phase += lfo_hz / sr_pre;
         if self.lfo_phase >= 1.0 {
             self.lfo_phase -= 1.0;
@@ -440,21 +497,26 @@ impl Voice {
         };
         // smooth noise source so vibrato isn't harsh FM
         self.mod_noise_hold = self.mod_noise_hold * 0.998 + self.noise.white() * 0.002;
+        // OSC1V voltage-control input (or PHONES fed to it) shifts the whole
+        // oscillator bank by 2^CV (manual: +1 unit CV = +1 octave). Applied
+        // before OSC3 is computed so all three oscillators track it.
+        if p.jack_routes[1] != 0 {
+            base *= 2.0f32.powf(route_signal(p.jack_routes[1], 0.0));
+        } else if phones_to(1) {
+            base *= 2.0f32.powf(phone_bus);
+        }
+
         // OSC3 audio sample for source A: compute its phase now (without
         // pitch-mod on itself to avoid feedback; manual modulates all three
         // but self-FM at audio rate is unstable in naive DSP).
         let fine3 = params::knob_0_10_to_fine_semi(p.osc3_freq_0_10);
         let range3 = p.osc3_range_oct as f32 * 12.0;
-        let mut f3 = base * 2.0f32.powf((range3 + fine3) / 12.0);
-        // RANGE = LO (-3): sub-audio drone. Without keyboard control it is a
-        // free drone (~6 Hz); there is no separate LO switch on the hardware.
-        if p.osc3_range_oct <= -3 {
-            f3 = if p.osc3_kb_ctrl {
-                (base * 2.0f32.powf((range3 + fine3) / 12.0)).max(0.3)
-            } else {
-                6.0 * 2.0f32.powf(fine3 / 12.0)
-            };
-        }
+        // OSC 3 CONTROL (manual): ON = OSC3 tracks the keyboard; OFF = OSC3 is
+        // decoupled from the keyboard, pitch wheel and modulation wheel and
+        // runs at a fixed pitch set by its RANGE + FREQUENCY knobs. With the
+        // fixed reference the LO range lands on the ~6 Hz sub-audio drone.
+        let osc3_ref = if p.osc3_kb_ctrl { base } else { OSC3_FREE_REF_HZ };
+        let f3 = (osc3_ref * 2.0f32.powf((range3 + fine3) / 12.0)).max(0.3);
         let dt3 = (f3 / sr_pre).clamp(0.00005, 0.25);
         // advance osc3 phase + drift (drift applied in main loop too; keep
         // simple by advancing here and reusing sample)
@@ -479,31 +541,26 @@ impl Voice {
         } else {
             osc3_sample
         };
+        // (9) NOISE/LFO: a signal patched to MOD SOURCE replaces the internal
+        // noise generator as the default modulation source (manual §3.1.2).
         let src_b = if p.mod_src_b_is_lfo {
             lfo
+        } else if p.jack_routes[0] != 0 {
+            route_signal(p.jack_routes[0], 0.0)
+        } else if phones_to(0) {
+            phone_bus
         } else {
             self.mod_noise_hold.clamp(-1.0, 1.0) * 3.0
         };
         let mix_t = (p.mod_mix_0_10 / 10.0).clamp(0.0, 1.0);
         let mod_bus = src_a * (1.0 - mix_t) + src_b * mix_t;
-        let lfo_saw = self.lfo_phase * 2.0 - 1.0;
-        let lfo_sqr = if self.lfo_phase < 0.5 { 1.0 } else { -1.0 };
-        let route_signal = |code: u8, mix_signal: f32| match code {
-            1 => lfo_saw,
-            2 => lfo_sqr,
-            3 => mix_signal,
-            4 => f_env * 2.0 - 1.0,
-            5 => a_env,
-            6 => phone_bus,
-            7 => self.prev_out,
-            _ => 0.0,
-        };
         let loud_route_gain = if p.jack_routes[7] != 0 {
             (1.0 + route_signal(p.jack_routes[7], 0.0) * 0.5).clamp(0.0, 2.0)
         } else {
             1.0
         };
-        let depth_total = ((p.mod_depth_0_10 / 10.0) + r.mod_wheel).clamp(0.0, 1.5);
+        // MOD DEPTH is driven by the knob, the mod wheel, and aftertouch.
+        let depth_total = ((p.mod_depth_0_10 / 10.0) + r.mod_wheel + r.aftertouch).clamp(0.0, 1.5);
         let mut mod_cents = 0.0;
         let mut mod_filter_oct = 0.0;
         if p.osc_mod_on && depth_total > 0.001 {
@@ -513,15 +570,6 @@ impl Voice {
         if p.filter_mod_on && depth_total > 0.001 {
             // Manual (32): filter modulated by mix. ±2 oct max.
             mod_filter_oct = mod_bus * depth_total * 2.0;
-        }
-        // OSC 1 voltage-control input (or PHONES fed to it) shifts the
-        // oscillator bank by up to ±1 octave. Applied to `base` (the bank
-        // reference) — previously this multiplied `target` after the glide
-        // value had already been taken, so the routing had no audible effect.
-        if p.jack_routes[1] != 0 {
-            base *= 2.0f32.powf(route_signal(p.jack_routes[1], 0.0));
-        } else if phones_to(1) {
-            base *= 2.0f32.powf(phone_bus);
         }
         base *= 2.0f32.powf(mod_cents / 1200.0);
         let base = base.max(20.0).min(4000.0);
@@ -670,7 +718,9 @@ impl Voice {
             0.0
         };
 
-        if !self.amp_env.is_active() && !eff_gate {
+        // When a gate jack is patched the voice must keep running so the LFO
+        // keeps advancing and the contour can retrigger.
+        if !self.amp_env.is_active() && !amp_gate && !gate_patched {
             let tail = self.filter.process(0.0, self.smooth_cutoff, reso);
             let o = tail * a_env * out_gain * 2.0 * phone_loud_gain * loud_route_gain + a440;
             self.prev_out = o.clamp(-1.2, 1.2);
@@ -926,6 +976,266 @@ mod tests {
         rms = (rms / 44100.0).sqrt();
         assert!(rms > 0.001, "voice too quiet, rms={rms}");
         assert!(rms < 2.0, "voice blowing up, rms={rms}");
+    }
+
+    #[test]
+    fn aftertouch_drives_modulation() {
+        let mut p = Params::default();
+        p.osc_mod_on = true;
+        p.mod_mix_0_10 = 10.0; // route Source B (LFO) into the mod bus
+        p.lfo_square = true;
+        p.lfo_rate_0_10 = 5.0;
+        let base = Runtime {
+            note: Some(60),
+            velocity: 0.9,
+            gate: true,
+            ..Runtime::default()
+        };
+        let with_at = Runtime { aftertouch: 1.0, ..base };
+
+        let mut v_off = Voice::new(44100.0);
+        let mut v_on = Voice::new(44100.0);
+        let mut differs = false;
+        for _ in 0..4000 {
+            let a = v_off.render(&p, &base);
+            let b = v_on.render(&p, &with_at);
+            if (a - b).abs() > 1e-6 {
+                differs = true;
+                break;
+            }
+        }
+        assert!(differs, "aftertouch produced no modulation with OSC MOD on");
+    }
+
+    #[test]
+    fn mod_source_jack_overrides_noise() {
+        // Source B in noise mode, fully mixed in, with the mod bus routed to
+        // pitch. A signal patched to MOD SOURCE (jack_routes[0]) must replace
+        // the internal noise default and change the output.
+        let mut p = Params::default();
+        p.mod_src_b_is_lfo = false;
+        p.mod_mix_0_10 = 10.0;
+        p.osc_mod_on = true;
+        p.mod_depth_0_10 = 10.0;
+        p.lfo_square = true;
+        p.lfo_rate_0_10 = 5.0;
+
+        let rt = Runtime {
+            note: Some(60),
+            velocity: 0.9,
+            gate: true,
+            ..Runtime::default()
+        };
+
+        let render = |params: &Params| {
+            let mut v = Voice::new(44100.0);
+            (0..4000).map(|_| v.render(params, &rt)).collect::<Vec<_>>()
+        };
+
+        let noise = render(&p);
+        let mut patched = p;
+        patched.jack_routes[0] = 1; // LFO TRIANGLE into MOD SOURCE
+        let lfo = render(&patched);
+
+        assert!(
+            noise.iter().zip(&lfo).any(|(a, b)| (a - b).abs() > 1e-6),
+            "patched MOD SOURCE did not override the internal noise source"
+        );
+    }
+
+    #[test]
+    fn osc1v_shifts_osc3() {
+        // OSC3 only, so any change must come from OSC3's own pitch.
+        let mut p = Params::default();
+        p.osc1_on = false;
+        p.osc2_on = false;
+        p.osc3_on = true;
+        p.osc3_level_0_10 = 10.0;
+        p.cutoff_0_10 = 10.0;
+        p.lfo_square = true;
+        p.lfo_rate_0_10 = 5.0;
+
+        let rt = Runtime {
+            note: Some(60),
+            velocity: 0.9,
+            gate: true,
+            ..Runtime::default()
+        };
+        let render = |params: &Params| {
+            let mut v = Voice::new(44100.0);
+            (0..4000).map(|_| v.render(params, &rt)).collect::<Vec<_>>()
+        };
+
+        let plain = render(&p);
+        let mut patched = p;
+        patched.jack_routes[1] = 1; // LFO TRIANGLE -> OSC1V
+        let shifted = render(&patched);
+
+        assert!(
+            plain.iter().zip(&shifted).any(|(a, b)| (a - b).abs() > 1e-6),
+            "OSC1V did not shift OSC3 (should track all three oscillators)"
+        );
+    }
+
+    #[test]
+    fn osc3_control_decouples_from_keyboard() {
+        // OSC3 only, so the rendered pitch reflects OSC3 by itself.
+        let mut p = Params::default();
+        p.osc1_on = false;
+        p.osc2_on = false;
+        p.osc3_on = true;
+        p.osc3_level_0_10 = 10.0;
+        p.cutoff_0_10 = 10.0;
+        p.kb_control_1 = false; // isolate from cutoff keyboard tracking
+        p.kb_control_2 = false;
+
+        let render = |params: &Params, note: u8| {
+            let mut v = Voice::new(44100.0);
+            let rt = Runtime {
+                note: Some(note),
+                velocity: 0.9,
+                gate: true,
+                ..Runtime::default()
+            };
+            (0..8000).map(|_| v.render(params, &rt)).collect::<Vec<_>>()
+        };
+
+        // ON: OSC 3 tracks the keyboard.
+        let mut on = p;
+        on.osc3_kb_ctrl = true;
+        let on_a = render(&on, 48);
+        let on_b = render(&on, 60);
+        assert!(
+            on_a.iter().zip(&on_b).any(|(a, b)| (a - b).abs() > 1e-4),
+            "OSC3 should vary with the keyboard when OSC 3 CONTROL is ON"
+        );
+
+        // OFF: the keyboard has no effect on OSC3.
+        let mut off = p;
+        off.osc3_kb_ctrl = false;
+        let off_a = render(&off, 48);
+        let off_b = render(&off, 60);
+        assert!(
+            off_a.iter().zip(&off_b).all(|(a, b)| (a - b).abs() < 1e-6),
+            "OSC3 should ignore the keyboard when OSC 3 CONTROL is OFF"
+        );
+    }
+
+    #[test]
+    fn lfo_cv_modulates_lfo_rate() {
+        // LFO drives the mod bus into pitch; a CV patched to LFO CV must
+        // change the LFO rate and therefore the output.
+        let mut p = Params::default();
+        p.mod_mix_0_10 = 10.0;
+        p.mod_src_b_is_lfo = true;
+        p.osc_mod_on = true;
+        p.mod_depth_0_10 = 10.0;
+        p.lfo_square = true;
+        p.lfo_rate_0_10 = 5.0;
+
+        let rt = Runtime {
+            note: Some(60),
+            velocity: 0.9,
+            gate: true,
+            ..Runtime::default()
+        };
+        let render = |params: &Params| {
+            let mut v = Voice::new(44100.0);
+            (0..8000).map(|_| v.render(params, &rt)).collect::<Vec<_>>()
+        };
+
+        let plain = render(&p);
+        let mut patched = p;
+        patched.jack_routes[2] = 5; // LOUD CONT -> LFO CV (0..1 envelope)
+        let modulated = render(&patched);
+
+        assert!(
+            plain
+                .iter()
+                .zip(&modulated)
+                .any(|(a, b)| (a - b).abs() > 1e-6),
+            "LFO CV did not modulate the LFO rate"
+        );
+    }
+
+    #[test]
+    fn gate_jack_triggers_filter_contour() {
+        // Manual: FC GATE applies an external trigger voltage to the filter
+        // contour. With no keyboard gate, sound needs LC GATE driving the
+        // loudness contour; adding FC GATE must then change the output via the
+        // filter contour opening the cutoff.
+        let mut p = Params::default();
+        p.lfo_square = true;
+        p.lfo_rate_0_10 = 6.0;
+        p.cutoff_0_10 = 3.0;
+        p.contour_amt_0_10 = 10.0;
+        p.jack_routes[6] = 2; // LC GATE <- LFO SQR
+
+        let rt = Runtime::default();
+        let render = |params: &Params| {
+            let mut v = Voice::new(44100.0);
+            (0..20000).map(|_| v.render(params, &rt)).collect::<Vec<_>>()
+        };
+
+        let lc_only = render(&p);
+        let mut both = p;
+        both.jack_routes[5] = 2; // FC GATE <- LFO SQR
+        let with_fc = render(&both);
+
+        assert!(
+            lc_only
+                .iter()
+                .zip(&with_fc)
+                .any(|(a, b)| (a - b).abs() > 1e-6),
+            "FC GATE did not trigger the filter contour"
+        );
+    }
+
+    #[test]
+    fn gate_jack_triggers_loudness_contour() {
+        // Manual: FC GATE / LC GATE apply an external trigger voltage to the
+        // contour. With no keyboard gate, patching LFO SQR into LC GATE must
+        // retrigger the loudness contour on each square high phase.
+        let mut p = Params::default();
+        p.lfo_square = true;
+        p.lfo_rate_0_10 = 6.0;
+        p.cutoff_0_10 = 10.0;
+        p.amp_sustain_0_10 = 10.0;
+        let rt = Runtime::default(); // no note, gate low
+
+        let peak = |params: &Params| {
+            let mut v = Voice::new(44100.0);
+            let mut peak = 0.0f32;
+            for _ in 0..44100 {
+                peak = peak.max(v.render(params, &rt).abs());
+            }
+            peak
+        };
+
+        let silent = peak(&p);
+        let mut patched = p;
+        patched.jack_routes[6] = 2; // LFO SQR -> LC GATE
+        let gated = peak(&patched);
+
+        assert!(silent < 1e-4, "voice should be silent with no gate, peak={silent}");
+        assert!(
+            gated > 0.01,
+            "LC GATE did not trigger the loudness contour, peak={gated}"
+        );
+    }
+
+    #[test]
+    fn aftertouch_cleared_when_notes_released() {
+        let mut rt = Runtime::default();
+        rt.note_on(60, 0.9);
+        rt.aftertouch = 0.7;
+        rt.note_off(60);
+        assert_eq!(rt.aftertouch, 0.0, "aftertouch not cleared on note-off");
+
+        rt.note_on(60, 0.9);
+        rt.aftertouch = 0.7;
+        rt.all_notes_off();
+        assert_eq!(rt.aftertouch, 0.0, "aftertouch not cleared on all-notes-off");
     }
 
     #[test]
